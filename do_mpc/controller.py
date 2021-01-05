@@ -431,7 +431,7 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
                 setattr(self, key, value)
 
 
-    def set_objective(self, mterm=None, lterm=None):
+    def set_objective(self, mterm=None, lterm=None, discount_factor=1):
         """Sets the objective of the optimal control problem (OCP). We introduce the following cost function:
 
         .. math::
@@ -459,20 +459,28 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
         :return: None
         :rtype: None
         """
-        assert mterm.shape == (1,1), 'mterm must have shape=(1,1). You have {}'.format(mterm.shape)
         assert lterm.shape == (1,1), 'lterm must have shape=(1,1). You have {}'.format(lterm.shape)
         assert self.flags['setup'] == False, 'Cannot call .set_objective after .setup_model.'
 
         _x, _u, _z, _tvp, _p = self.model['x','u','z','tvp','p']
 
-
-        # Check if mterm is valid:
-        if isinstance(mterm, casadi.DM):
-            pass
-        elif isinstance(mterm, (casadi.SX, casadi.MX)):
-            assert set(symvar(mterm)).issubset(set(symvar(vertcat(_x, _tvp, _p)))), 'mterm must be solely a function of _x, _tvp and _p.'
+        if isinstance(mterm, casadi.Callback):
+            self.mterm = mterm
+            self.mterm_fun = mterm
         else:
-            raise Exception('mterm must be of type casadi.DM, casadi.SX or casadi.MX. You have: {}.'.format(type(mterm)))
+            assert mterm.shape == (1,1), 'mterm must have shape=(1,1). You have {}'.format(mterm.shape)
+
+            # Check if mterm is valid:
+            if isinstance(mterm, casadi.DM):
+                pass
+            elif isinstance(mterm, (casadi.SX, casadi.MX)):
+                assert set(symvar(mterm)).issubset(set(symvar(vertcat(_x, _p)))), 'mterm must be solely a function of _x and _p.'
+            else:
+                raise Exception('mterm must be of type casadi.DM, casadi.SX or casadi.MX. You have: {}.'.format(type(mterm)))
+
+            self.mterm = mterm
+            # TODO: This function should be evaluated with scaled variables.
+            self.mterm_fun = Function('mterm', [_x, _p], [mterm])
 
         # Check if lterm is valid:
         if isinstance(lterm, casadi.DM):
@@ -482,12 +490,12 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
         else:
             raise Exception('lterm must be of type casadi.DM, casadi.SX or casadi.MX. You have: {}.'.format(type(lterm)))
 
-        self.mterm = mterm
-        # TODO: This function should be evaluated with scaled variables.
-        self.mterm_fun = Function('mterm', [_x, _tvp, _p], [mterm])
+
 
         self.lterm = lterm
         self.lterm_fun = Function('lterm', [_x, _u, _z, _tvp, _p], [lterm])
+
+        self.discount_factor = discount_factor
 
         self.flags['set_objective'] = True
 
@@ -937,12 +945,15 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
 
         The :py:class:`do_mpc.estimator.MHE` has a similar method with similar structure.
         """
+        casadi_type = "MX" if isinstance(self.mterm, casadi.Callback) else "SX"
+        casadi_symstruct = struct_symSX if casadi_type == "SX" else struct_symMX
+        casadi_struct = struct_SX if casadi_type == "SX" else struct_MX
         # Obtain an integrator (collocation, discrete-time) and the amount of intermediate (collocation) points
         ifcn, n_total_coll_points = self._setup_discretization()
         n_branches, n_scenarios, child_scenario, parent_scenario, branch_offset = self._setup_scenario_tree()
         n_max_scenarios = self.n_combinations ** self.n_robust
         # Create struct for optimization variables:
-        self.opt_x = opt_x = struct_symSX([
+        self.opt_x = opt_x = casadi_symstruct([
             # One additional point (in the collocation dimension) for the final point.
             entry('_x', repeat=[self.n_horizon+1, n_max_scenarios,
                                 1+n_total_coll_points], struct=self.model._x),
@@ -966,7 +977,7 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
 
 
         # Create struct for optimization parameters:
-        self.opt_p = opt_p = struct_symSX([
+        self.opt_p = opt_p = casadi_symstruct([
             entry('_x0', struct=self.model._x),
             entry('_tvp', repeat=self.n_horizon+1, struct=self.model._tvp),
             entry('_p', repeat=self.n_combinations, struct=self.model._p),
@@ -977,11 +988,11 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
         self.n_opt_p = opt_p.shape[0]
 
         # Dummy struct with symbolic variables
-        self.aux_struct = struct_symSX([
+        self.aux_struct = casadi_symstruct([
             entry('_aux', repeat=[self.n_horizon, n_max_scenarios], struct=self.model._aux_expression)
         ])
         # Create mutable symbolic expression from the struct defined above.
-        self.opt_aux = opt_aux = struct_SX(self.aux_struct)
+        self.opt_aux = opt_aux = casadi_struct(self.aux_struct)
 
         self.n_opt_aux = self.opt_aux.shape[0]
 
@@ -1053,21 +1064,23 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
                     # TODO: Add terminal constraints with an additional nl_cons
 
                     # Add contribution to the cost
-                    obj += omega[k] * self.lterm_fun(opt_x_unscaled['_x', k, s, -1], opt_x_unscaled['_u', k, s],
+                    obj += self.discount_factor ** k * omega[k] * self.lterm_fun(opt_x_unscaled['_x', k, s, -1], opt_x_unscaled['_u', k, s],
                                                      opt_x_unscaled['_z', k, s, -1], opt_p['_tvp', k], opt_p['_p', current_scenario])
                     # Add slack variables to the cost
-                    obj += self.epsterm_fun(opt_x_unscaled['_eps', k, s])
+                    obj += self.discount_factor ** k * self.epsterm_fun(opt_x_unscaled['_eps', k, s])
 
                     # In the last step add the terminal cost too
                     if k == self.n_horizon - 1:
-                        obj += omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_tvp', k+1],
-                                                         opt_p['_p', current_scenario])
+                        if isinstance(self.mterm, casadi.Callback):
+                            obj += self.discount_factor ** (k + 1) * omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1])
+                        else:
+                            obj += self.discount_factor ** (k + 1) * omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_p', current_scenario])
 
                     # U regularization:
                     if k == 0:
-                        obj += self.rterm_factor.cat.T@((opt_x['_u', 0, s]-opt_p['_u_prev']/self._u_scaling)**2)
+                        obj += self.discount_factor ** k * self.rterm_factor.cat.T@((opt_x['_u', 0, s]-opt_p['_u_prev']/self._u_scaling)**2)
                     else:
-                        obj += self.rterm_factor.cat.T@((opt_x['_u', k, s]-opt_x['_u', k-1, parent_scenario[k][s]])**2)
+                        obj += self.discount_factor ** k * self.rterm_factor.cat.T@((opt_x['_u', k, s]-opt_x['_u', k-1, parent_scenario[k][s]])**2)
 
                     # Calculate the auxiliary expressions for the current scenario:
                     opt_aux['_aux', k, s] = self.model._aux_expression_fun(
