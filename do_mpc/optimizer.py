@@ -502,6 +502,7 @@ class Optimizer:
         self.opt_x_num.master = r['x']
         self.opt_x_num_unscaled.master = r['x']*self.opt_x_scaling
         self.opt_g_num = r['g']
+        self.opt_f_num = r['f']
         # Values of lagrange multipliers:
         self.lam_g_num = r['lam_g']
         self.lam_x_num = r['lam_x']
