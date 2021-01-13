@@ -1137,10 +1137,11 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
         # Create casadi optimization object:
         nlpsol_opts = {
             'expand': False,
-            'ipopt.linear_solver': 'mumps',
-        }.update(self.nlpsol_opts)
+            'ipopt.linear_solver': 'mumps'
+        }
+        nlpsol_opts.update(self.nlpsol_opts)
         nlp = {'x': vertcat(opt_x), 'f': obj, 'g': cons, 'p': vertcat(opt_p)}
-        self.S = nlpsol('S', 'ipopt', nlp, self.nlpsol_opts)
+        self.S = nlpsol('S', 'ipopt', nlp, nlpsol_opts)
 
         # Create copies of these structures with numerical values (all zero):
         self.opt_x_num = self.opt_x(0)
