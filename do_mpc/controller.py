@@ -473,6 +473,8 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
             # Check if mterm is valid:
             if isinstance(mterm, casadi.DM):
                 pass
+            elif isinstance(mterm, np.ndarray):
+                mterm = casadi.DM(mterm)
             elif isinstance(mterm, (casadi.SX, casadi.MX)):
                 assert set(symvar(mterm)).issubset(set(symvar(vertcat(_x, _p)))), 'mterm must be solely a function of _x and _p.'
             else:
@@ -1077,7 +1079,8 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
                             term_cost = omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_p', current_scenario])
 
                         if '[n_horizon,0]' in self.model._p.labels():
-                            term_cost *= self.discount_factor ** (opt_p["_p"][0] + 1)
+                            n_horizon_idx = self.model._p.labels().index("[n_horizon,0]")
+                            term_cost *= self.discount_factor ** (opt_p["_p", s][n_horizon_idx] + 1)
                         else:
                             term_cost *= self.discount_factor ** (k + 1)
 
