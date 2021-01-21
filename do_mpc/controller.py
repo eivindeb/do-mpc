@@ -1081,8 +1081,7 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
                         else:
                             term_cost *= self.discount_factor ** (k + 1)
 
-
-                        obj += term_cost
+                        #obj += term_cost
 
                     # U regularization:
                     if k == 0:
@@ -1094,6 +1093,9 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
                     opt_aux['_aux', k, s] = self.model._aux_expression_fun(
                         opt_x_unscaled['_x', k, s, -1], opt_x_unscaled['_u', k, s], opt_x_unscaled['_z', k, s, -1], opt_p['_tvp', k], opt_p['_p', current_scenario])
 
+        _x, _u, _z, _tvp, _p = self.model['x', 'u', 'z', 'tvp', 'p']
+        self.obj_no_term_fun = Function("obj_no_term", [opt_x_unscaled, opt_p], [obj])
+        obj += term_cost
 
         if self.cons_check_colloc_points:   # Constraints for all collocation points.
             # Dont bound the initial state
