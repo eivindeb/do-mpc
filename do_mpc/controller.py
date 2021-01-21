@@ -1073,10 +1073,7 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
 
                     # In the last step add the terminal cost too
                     if k == self.n_horizon - 1:
-                        if isinstance(self.mterm, casadi.Callback):
-                            term_cost = omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1])
-                        else:
-                            term_cost = omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_p', current_scenario])
+                        term_cost = omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_p', current_scenario])
 
                         if '[n_horizon,0]' in self.model._p.labels():
                             n_horizon_idx = self.model._p.labels().index("[n_horizon,0]")
