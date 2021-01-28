@@ -509,11 +509,14 @@ class Optimizer:
         self.lam_x_num = r['lam_x']
         self.solver_stats = self.S.stats()
 
+        self.calculate_aux_num()
+
+    def calculate_aux_num(self):
         # Calculate values of auxiliary expressions (defined in model)
         self.opt_aux_num.master = self.opt_aux_expression_fun(
-                self.opt_x_num,
-                self.opt_p_num
-            )
+            self.opt_x_num,
+            self.opt_p_num
+        )
 
     def _setup_discretization(self):
         """Private method that creates the discretization for the optimizer (MHE or MPC).
