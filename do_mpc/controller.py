@@ -111,10 +111,13 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
             'store_full_solution',
             'store_lagr_multiplier',
             'store_solver_stats',
-            'nlpsol_opts'
+            'nlpsol_opts',
+            "use_nn_vf"
         ]
 
         # Default Parameters (param. details in set_param method):
+        self.use_nn_vf = False
+        self.vf = None
         self.n_robust = 0
         self.open_loop = False
         self.use_terminal_bounds = True
@@ -431,7 +434,7 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
                 setattr(self, key, value)
 
 
-    def set_objective(self, mterm=None, lterm=None, discount_factor=1):
+    def set_objective(self, mterm=None, lterm=None, vf=None, discount_factor=1):
         """Sets the objective of the optimal control problem (OCP). We introduce the following cost function:
 
         .. math::
@@ -464,7 +467,10 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
 
         _x, _u, _z, _tvp, _p = self.model['x','u','z','tvp','p']
 
-        if isinstance(mterm, casadi.Callback):
+
+        self.vf = vf
+
+        if isinstance(mterm, casadi.Callback) or isinstance(mterm, Function):
             self.mterm = mterm
             self.mterm_fun = mterm
         else:
@@ -900,6 +906,9 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
         self.opt_p_num['_u_prev'] = u_prev
         self.opt_p_num['_tvp'] = tvp0['_tvp']
         self.opt_p_num['_p'] = p0['_p']
+        if self.use_nn_vf:
+            self.opt_p_num["_vf_weights"] = self.vf.weights_num
+            self.opt_p_num["_vf_biases"] = self.vf.biases_num
         # Solve the optimization problem (method inherited from optimizer)
         self.solve()
 
@@ -979,12 +988,24 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
 
 
         # Create struct for optimization parameters:
-        self.opt_p = opt_p = casadi_symstruct([
-            entry('_x0', struct=self.model._x),
-            entry('_tvp', repeat=self.n_horizon+1, struct=self.model._tvp),
-            entry('_p', repeat=self.n_combinations, struct=self.model._p),
-            entry('_u_prev', struct=self.model._u),
-        ])
+        if self.use_nn_vf:
+            self.vf.create_function(opt_x_unscaled['_x', -1, 0, -1], vertcat(*self.model._p[[l.split(",")[0].replace("[", "") for l in self.model._p.labels() if "n_horizon" not in l]]))
+            self.vf_fun = self.vf.eval_VF
+            self.opt_p = opt_p = casadi_symstruct([
+                entry('_x0', struct=self.model._x),
+                entry('_tvp', repeat=self.n_horizon + 1, struct=self.model._tvp),
+                entry('_p', repeat=self.n_combinations, struct=self.model._p),
+                entry('_u_prev', struct=self.model._u),
+                entry('_vf_weights', struct=self.vf.weights),
+                entry('_vf_biases', struct=self.vf.biases)
+            ])
+        else:
+            self.opt_p = opt_p = casadi_symstruct([
+                entry('_x0', struct=self.model._x),
+                entry('_tvp', repeat=self.n_horizon+1, struct=self.model._tvp),
+                entry('_p', repeat=self.n_combinations, struct=self.model._p),
+                entry('_u_prev', struct=self.model._u),
+            ])
         _w = self.model._w(0)
 
         self.n_opt_p = opt_p.shape[0]
@@ -1073,15 +1094,22 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
 
                     # In the last step add the terminal cost too
                     if k == self.n_horizon - 1:
-                        term_cost = omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_p', current_scenario])
+                        if self.use_nn_vf:
+                            use_p_idxs = []
+                            for p_i in range(opt_p["_p", current_scenario].shape[0]):
+                                if "n_horizon" not in str(opt_p["_p", current_scenario][p_i]):
+                                    use_p_idxs.append(p_i)
+                            term_cost = omega[k] * self.vf_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_p', current_scenario][use_p_idxs], opt_p['_vf_weights'], opt_p["_vf_biases"])
+                        else:
+                            term_cost = omega[k] * self.mterm_fun(opt_x_unscaled['_x', k + 1, s, -1], opt_p['_p', current_scenario])
 
                         if '[n_horizon,0]' in self.model._p.labels():
                             n_horizon_idx = self.model._p.labels().index("[n_horizon,0]")
-                            term_cost *= self.discount_factor ** (opt_p["_p", s][n_horizon_idx] + 1)
+                            term_cost *= self.discount_factor ** opt_p["_p", s][n_horizon_idx]
                         else:
                             term_cost *= self.discount_factor ** (k + 1)
 
-                        #obj += term_cost
+                        obj += term_cost
 
                     # U regularization:
                     if k == 0:
@@ -1092,10 +1120,6 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
                     # Calculate the auxiliary expressions for the current scenario:
                     opt_aux['_aux', k, s] = self.model._aux_expression_fun(
                         opt_x_unscaled['_x', k, s, -1], opt_x_unscaled['_u', k, s], opt_x_unscaled['_z', k, s, -1], opt_p['_tvp', k], opt_p['_p', current_scenario])
-
-        _x, _u, _z, _tvp, _p = self.model['x', 'u', 'z', 'tvp', 'p']
-        self.obj_no_term_fun = Function("obj_no_term", [opt_x_unscaled, opt_p], [obj])
-        obj += term_cost
 
         if self.cons_check_colloc_points:   # Constraints for all collocation points.
             # Dont bound the initial state
