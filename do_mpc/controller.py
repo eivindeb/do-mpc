@@ -291,15 +291,17 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
         assert len(ind)>=2, 'Power index must include bound_type, var_type, var_name (as a tuple).'
         bound_type = ind[0]
         var_name   = ind[1:]
+        var_type = "_x"
 
         err_msg = 'Invalid power index {} for bound_type. Must be from (lower, upper).'
         assert bound_type in ('lower', 'upper'), err_msg.format(bound_type)
+        err_msg = 'Invalid power index {} for var_type. Must be from (_x, _u, _z, _p_est).'
+        assert var_type in ('_x', '_u', '_z', '_p_est'), err_msg.format(var_type)
 
         if bound_type == 'lower':
-            query = '{var_type}_{bound_type}'.format(var_type=var_type, bound_type='lb')
+            query = '_x_terminal_lb'
         elif bound_type == 'upper':
-            query = '{var_type}_{bound_type}'.format(var_type=var_type, bound_type='ub')
-        # query results string e.g. _x_lb, _x_ub, _u_lb, u_ub ....
+            query = '_x_terminal_ub'
 
         # Get the desired struct:
         var_struct = getattr(self, query)
@@ -314,10 +316,11 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
         """See Docstring for bounds getter method"""
 
         assert isinstance(ind, tuple), 'Power index must include bound_type, var_type, var_name (as a tuple).'
-        assert len(ind)>=3, 'Power index must include bound_type, var_type, var_name (as a tuple).'
+        assert len(ind)>=2, 'Power index must include bound_type, var_type, var_name (as a tuple).'
         bound_type = ind[0]
-        var_type   = ind[1]
-        var_name   = ind[2:]
+        #var_type   = ind[1]
+        var_name   = ind[1:]
+        var_type = "_x"
 
         err_msg = 'Invalid power index {} for bound_type. Must be from (lower, upper).'
         assert bound_type in ('lower', 'upper'), err_msg.format(bound_type)
@@ -894,6 +897,31 @@ class MPC(do_mpc.optimizer.Optimizer, do_mpc.model.IteratedVariables):
             time.sleep(5)
             # Since do-mpc is warmstarting, the initial guess will exist after the first call.
             self.flags['set_initial_guess'] = True
+
+        if self.cons_check_colloc_points:   # Constraints for all collocation points.
+            # Dont bound the initial state
+            self.lb_opt_x['_x', 1:self.n_horizon] = self._x_lb.cat/self._x_scaling
+            self.ub_opt_x['_x', 1:self.n_horizon] = self._x_ub.cat/self._x_scaling
+
+            # Bounds for the algebraic variables:
+            self.lb_opt_x['_z'] = self._z_lb.cat/self._z_scaling
+            self.ub_opt_x['_z'] = self._z_ub.cat/self._z_scaling
+
+            # Terminal bounds
+            self.lb_opt_x['_x', self.n_horizon, :, -1] = self._x_terminal_lb.cat/self._x_scaling
+            self.ub_opt_x['_x', self.n_horizon, :, -1] = self._x_terminal_ub.cat/self._x_scaling
+        else:   # Constraints only at the beginning of the finite Element
+            # Dont bound the initial state
+            self.lb_opt_x['_x', 1:self.n_horizon, :, -1] = self._x_lb.cat/self._x_scaling
+            self.ub_opt_x['_x', 1:self.n_horizon, :, -1] = self._x_ub.cat/self._x_scaling
+
+            # Bounds for the algebraic variables:
+            self.lb_opt_x['_z', :, :, 0] = self._z_lb.cat/self._z_scaling
+            self.ub_opt_x['_z', :, : ,0] = self._z_ub.cat/self._z_scaling
+
+            # Terminal bounds
+            self.lb_opt_x['_x', self.n_horizon, :, -1] = self._x_terminal_lb.cat/self._x_scaling
+            self.ub_opt_x['_x', self.n_horizon, :, -1] = self._x_terminal_ub.cat/self._x_scaling
 
         # Get current tvp, p and time (as well as previous u)
         u_prev = self._u0
